@@ -51,6 +51,14 @@ class GoldBuyDipStrategy(BaseStrategy):
             if close < lowest_low:
                 lowest_low = close
         
+        # Prevent division by zero
+        if lowest_low <= 0:
+            logger.error(f"Invalid lowest_low value: {lowest_low}. Cannot calculate percentage trigger.")
+            return None
+        if highest_high <= 0:
+            logger.error(f"Invalid highest_high value: {highest_high}. Cannot calculate percentage trigger.")
+            return None
+        
         pct_from_low = ((current_price - lowest_low) / lowest_low) * 100
         if pct_from_low >= self.config.percentage_threshold:
             return TradeDirection.SELL
@@ -116,11 +124,7 @@ class GoldBuyDipStrategy(BaseStrategy):
         
         # Volume-weighted average price calculation
         weighted_price = sum(trade["price"] * trade["lot_size"] for trade in self.state.grid_trades)
-        try:
-            vwap = weighted_price / total_lots
-        except ZeroDivisionError:
-            logger.error("Division by zero encountered while calculating VWAP in calculate_volume_weighted_take_profit")
-            return None
+        vwap = weighted_price / total_lots
         
         first_trade = self.state.grid_trades[0]
 
@@ -217,8 +221,14 @@ class GoldBuyDipStrategy(BaseStrategy):
                 price_movement_score = ((current_price - lowest_low) / price_range) * 100
             
             # Debug percentage trigger calculation
-            pct_from_low = ((current_price - lowest_low) / lowest_low) * 100
-            pct_from_high = ((current_price - highest_high) / highest_high) * 100
+            # Prevent division by zero
+            if lowest_low > 0 and highest_high > 0:
+                pct_from_low = ((current_price - lowest_low) / lowest_low) * 100
+                pct_from_high = ((current_price - highest_high) / highest_high) * 100
+            else:
+                pct_from_low = 0
+                pct_from_high = 0
+                logger.warning(f"Invalid price values for percentage calculation: lowest_low={lowest_low}, highest_high={highest_high}")
             
             # Debug take profit monitoring for active positions (only for grid trading)
             tp_info = ""
@@ -400,13 +410,21 @@ class GoldBuyDipStrategy(BaseStrategy):
             }
         else:
             # Return active grid information
+            total_lots = sum(t["lot_size"] for t in self.state.grid_trades)
+            # Prevent division by zero in average price calculation
+            if total_lots > 0:
+                average_price = sum(t["price"] * t["lot_size"] for t in self.state.grid_trades) / total_lots
+            else:
+                average_price = 0
+                logger.warning("Total lots is zero in get_grid_status, cannot calculate average price")
+            
             return {
                 "active": True,
                 "grid_level": len(self.state.grid_trades),
-                "grid_direction": self.state.grid_trades[0]["direction"] if self.state.grid_trades else None,
-                "last_grid_price": self.state.grid_trades[-1]["price"] if self.state.grid_trades else 0,
-                "average_price": sum(t["price"] * t["lot_size"] for t in self.state.grid_trades) / sum(t["lot_size"] for t in self.state.grid_trades) if self.state.grid_trades else 0,
-                "total_lots": sum(t["lot_size"] for t in self.state.grid_trades)
+                "grid_direction": self.state.grid_trades[0]["direction"],
+                "last_grid_price": self.state.grid_trades[-1]["price"],
+                "average_price": average_price,
+                "total_lots": total_lots
             }
     
     def _log_market_data_with_signals(self, signal: Optional[TradeSignal], zscore: float, atr: float, 
