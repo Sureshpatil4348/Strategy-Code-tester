@@ -85,14 +85,12 @@ class GoldBuyDipStrategy(BaseStrategy):
                 return 0.0
             reference_price = self.state.grid_trades[-1]["price"]
             spacing = reference_price * (self.config.grid_percent / 100)
-            # Ensure minimum spacing for XAUUSD (at least 0.50 points)
-            min_spacing = 0.50 if self.is_gold else 0.0001
-            return max(spacing, min_spacing)
+            return spacing
         else:
             atr = calculate_atr(self.candles, self.config.atr_period)
-            # Return minimum ATR safety value if insufficient data
+            # Return minimum ATR safety value if insufficient data (matches MT4)
             if atr <= 0:
-                return 0.001 if self.is_gold else 0.00001
+                return 0.001
             return atr * self.config.grid_atr_multiplier
     
     def calculate_grid_lot_size(self, grid_level: int) -> float:
@@ -126,21 +124,21 @@ class GoldBuyDipStrategy(BaseStrategy):
         
         first_trade = self.state.grid_trades[0]
 
-        # Define divisor for clarity and maintainability
-        divisor = 100 if self.is_gold else 10000
+        # Use Point value like MT4 (0.01 for gold, 0.0001 for forex)
+        point = 0.01 if self.is_gold else 0.0001
 
         if first_trade["direction"] == "BUY":
             if self.config.use_take_profit_percent:
                 return vwap * (1 + self.config.take_profit_percent / 100)
             else:
-                # Convert points to price points based on symbol type
-                return vwap + (self.config.take_profit / divisor)
+                # Convert points to price using Point value (matches MT4)
+                return vwap + (self.config.take_profit * point)
         else:
             if self.config.use_take_profit_percent:
                 return vwap * (1 - self.config.take_profit_percent / 100)
             else:
-                # Convert points to price points based on symbol type
-                return vwap - (self.config.take_profit / divisor)
+                # Convert points to price using Point value (matches MT4)
+                return vwap - (self.config.take_profit * point)
     
     def check_grid_exit_conditions(self, current_price: float) -> bool:
         """Check if grid should be closed - profit target OR max trades reached."""
@@ -258,10 +256,6 @@ class GoldBuyDipStrategy(BaseStrategy):
                     exit_reason = "Single trade profit target reached"
             
             if should_exit:
-                # Store close info for intelligent filtering
-                self.state.last_grid_close_price = candle.close
-                self.state.last_grid_close_direction = self.state.grid_trades[0]["direction"] if self.state.grid_trades else None
-                
                 # Close all trades
                 self.state.setup_state = SetupState.WAITING_FOR_TRIGGER
                 total_trades = len(self.state.grid_trades)
@@ -285,25 +279,8 @@ class GoldBuyDipStrategy(BaseStrategy):
             return signal
         
         if self.state.setup_state == SetupState.WAITING_FOR_TRIGGER:
-            # Intelligent filtering: prevent immediate re-entry without significant price move
-            if self.state.last_grid_close_price > 0:
-                current_price = candle.close
-                if self.state.last_grid_close_price != 0:
-                    price_move_pct = abs(current_price - self.state.last_grid_close_price) / self.state.last_grid_close_price * 100
-                else:
-                    logger.error("Division by zero: last_grid_close_price is 0 when calculating price_move_pct")
-                    price_move_pct = 0
-                
-                if price_move_pct < self.state.min_price_move_for_new_grid:
-                    logger.debug(f"Insufficient price move: {price_move_pct:.3f}% < {self.state.min_price_move_for_new_grid}%")
-                    return None
-                
             trigger = self.check_percentage_trigger()
             if trigger:
-                # Additional filter: avoid same direction trades too close together
-                if self._is_same_direction_too_close(trigger.value, candle.close):
-                    return None
-                
                 logger.info(f"Gold Buy Dip: Percentage trigger detected - {trigger}")
                 self.state.setup_state = SetupState.WAITING_FOR_ZSCORE
                 self.state.trigger_direction = trigger
@@ -353,7 +330,7 @@ class GoldBuyDipStrategy(BaseStrategy):
                 self._log_market_data_with_signals(signal, zscore, atr, price_movement_score, 0)
                 return signal
             
-            elif self.state.wait_candles_count >= self.config.zscore_wait_candles:
+            elif self.state.wait_candles_count > self.config.zscore_wait_candles:
                 # Z-score confirmation timeout - reset to waiting for trigger
                 logger.info(f"Z-score confirmation timeout after {self.config.zscore_wait_candles} candles")
                 self.state.setup_state = SetupState.WAITING_FOR_TRIGGER
@@ -417,42 +394,20 @@ class GoldBuyDipStrategy(BaseStrategy):
     
     def get_grid_status(self) -> dict:
         """Get current grid trading status."""
-        last_candle_close = self.candles[-1].close if self.candles else 0
-        price_move_since_close = 0
-
-        if self.state.last_grid_close_price > 0 and last_candle_close > 0:
-            price_move_since_close = abs(last_candle_close - self.state.last_grid_close_price) / self.state.last_grid_close_price * 100
-        
         if not self.state.grid_trades:
             return {
-                "active": False,
-                "last_close_price": self.state.last_grid_close_price,
-                "last_close_direction": self.state.last_grid_close_direction,
-                "price_move_since_close": price_move_since_close,
-                "min_move_required": self.state.min_price_move_for_new_grid
+                "active": False
             }
-
-    def _is_same_direction_too_close(self, direction: str, current_price: float) -> bool:
-        """
-        Returns True if a new trade in the same direction is too close to the last closed grid trade.
-        """
-        last_dir = self.state.last_grid_close_direction
-        last_price = self.state.last_grid_close_price
-        min_move = self.state.min_price_move_for_new_grid
-
-        if last_dir and direction == last_dir and last_price > 0:
-            if last_dir == "BUY":
-                if current_price >= last_price * (1 - min_move / 100):
-                    logger.debug(f"Same direction filter: BUY too close to last close")
-                    return True
-            else:
-                if current_price <= last_price * (1 + min_move / 100):
-                    logger.debug(f"Same direction filter: SELL too close to last close")
-                    return True
-        return False
-
-    
-    # (Removed duplicate and malformed get_grid_status definition)
+        else:
+            # Return active grid information
+            return {
+                "active": True,
+                "grid_level": len(self.state.grid_trades),
+                "grid_direction": self.state.grid_trades[0]["direction"] if self.state.grid_trades else None,
+                "last_grid_price": self.state.grid_trades[-1]["price"] if self.state.grid_trades else 0,
+                "average_price": sum(t["price"] * t["lot_size"] for t in self.state.grid_trades) / sum(t["lot_size"] for t in self.state.grid_trades) if self.state.grid_trades else 0,
+                "total_lots": sum(t["lot_size"] for t in self.state.grid_trades)
+            }
     
     def _log_market_data_with_signals(self, signal: Optional[TradeSignal], zscore: float, atr: float, 
                                     price_movement_score: float, drawdown_pct: float):
@@ -503,7 +458,7 @@ class GoldBuyDipStrategy(BaseStrategy):
         logger.info("Resetting strategy state")
         self.state = GoldBuyDipState()
         self.candles.clear()
-        logger.info(f"Strategy reset with intelligent filtering (min move: {self.state.min_price_move_for_new_grid}%)")
+        logger.info("Strategy reset complete")
     
     def update_trade_ticket(self, grid_level: int, ticket: str):
         """Update trade ticket after successful execution"""
