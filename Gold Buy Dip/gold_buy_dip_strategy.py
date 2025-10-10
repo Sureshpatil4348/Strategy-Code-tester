@@ -145,7 +145,7 @@ class GoldBuyDipStrategy(BaseStrategy):
                 return vwap - (self.config.take_profit * point)
     
     def check_grid_exit_conditions(self, current_price: float) -> bool:
-        """Check if grid should be closed - profit target OR max trades reached."""
+        """Check if grid should be closed based on profit target only."""
         if not self.state.grid_trades:
             return False
         
@@ -159,11 +159,6 @@ class GoldBuyDipStrategy(BaseStrategy):
             elif first_trade["direction"] == "SELL" and current_price <= avg_tp:
                 logger.info(f"SELL grid profit target reached: {current_price:.2f} <= {avg_tp:.2f}")
                 return True
-        
-        # Max grid trades reached - force close all positions (matching MQL4 logic)
-        if len(self.state.grid_trades) >= self.config.max_grid_trades:
-            logger.info(f"Maximum grid trades reached ({self.config.max_grid_trades}). Force closing all positions.")
-            return True
         
         return False
     
@@ -260,6 +255,7 @@ class GoldBuyDipStrategy(BaseStrategy):
             # Apply same exit logic for both grid and single trades
             should_exit = self.check_grid_exit_conditions(candle.close)
             if should_exit:
+                # Exit reason reflects TP-only logic in check_grid_exit_conditions
                 if self.config.use_grid_trading:
                     exit_reason = "Grid profit target reached"
                 else:
