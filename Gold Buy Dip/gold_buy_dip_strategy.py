@@ -108,7 +108,8 @@ class GoldBuyDipStrategy(BaseStrategy):
             if not hasattr(self, '_progressive_lot_cache'):
                 self._progressive_lot_cache = {}
             if grid_level not in self._progressive_lot_cache:
-                self._progressive_lot_cache[grid_level] = self.config.lot_size * (self.config.lot_progression_factor ** grid_level)
+                # Match MT4 logic: LotSize * MathPow(Factor, CurrentGridLevel + 1)
+                self._progressive_lot_cache[grid_level] = self.config.lot_size * (self.config.lot_progression_factor ** (grid_level + 1))
             return self._progressive_lot_cache[grid_level]
         else:
             return self.config.lot_size * self.config.grid_lot_multiplier
